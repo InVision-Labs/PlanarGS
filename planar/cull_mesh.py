@@ -1,5 +1,4 @@
 import numpy as np
-import os
 import torch
 from scene.dataset_readers import readColmapSceneInfo
 from common_utils.graphics_utils import get_k
