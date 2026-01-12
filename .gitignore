@@ -5,3 +5,7 @@ output
 *.pth
 submodules/groundedsam
 ckpt
+*.so
+submodules/simple-knn/**/_C*.so
+submodules/pytorch3d/**/_C*.so
+scenes
