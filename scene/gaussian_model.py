@@ -167,6 +167,22 @@ class GaussianModel:
 
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
 
+        # If COLMAP produced no points, skip distCUDA2/initialization that would
+        # launch invalid CUDA kernels for empty inputs. We'll rely on later
+        # planar-guided initialization (or other densification) to seed points.
+        if fused_point_cloud.shape[0] == 0:
+            sh_rest = (self.max_sh_degree + 1) ** 2 - 1
+            self._xyz = nn.Parameter(torch.empty((0, 3), device="cuda", dtype=torch.float32, requires_grad=True))
+            self._knn_f = nn.Parameter(torch.empty((0, 6), device="cuda", dtype=torch.float32, requires_grad=True))
+            self._features_dc = nn.Parameter(torch.empty((0, 1, 3), device="cuda", dtype=torch.float32, requires_grad=True))
+            self._features_rest = nn.Parameter(torch.empty((0, sh_rest, 3), device="cuda", dtype=torch.float32, requires_grad=True))
+            self._scaling = nn.Parameter(torch.empty((0, 3), device="cuda", dtype=torch.float32, requires_grad=True))
+            self._rotation = nn.Parameter(torch.empty((0, 4), device="cuda", dtype=torch.float32, requires_grad=True))
+            self._opacity = nn.Parameter(torch.empty((0, 1), device="cuda", dtype=torch.float32, requires_grad=True))
+            self.max_radii2D = torch.zeros((0,), device="cuda", dtype=torch.float32)
+            self.max_weight = torch.zeros((0,), device="cuda", dtype=torch.float32)
+            return
+
         dist = torch.sqrt(torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)) 
         # print(f"new scale {torch.quantile(dist, 0.1)}")
         scales = torch.log(dist)[...,None].repeat(1, 3)
@@ -495,6 +511,58 @@ class GaussianModel:
         planarmasks, prior_depth = viewpoint_cam.planarmask, viewpoint_cam.priordepth
         R = torch.from_numpy(viewpoint_cam.R).float().cuda()
         T = torch.from_numpy(viewpoint_cam.T).float().cuda()
+        # Cold-start: if COLMAP produced 0 points, seed Gaussians directly from the depth+plane priors.
+        # This avoids crashes in distCUDA2/find_nearest and lets training proceed.
+        if gs_points.shape[0] == 0:
+            prior_intrpoints, _ = Depth2Pointscam(prior_depth, viewpoint_cam.inv_K)
+            prior_points = torch.matmul(R, (prior_intrpoints.T - T.reshape(3, 1)))
+            seg_mask, seg_num, seg_pnum = InitialPlaneSeg(planarmasks)
+
+            # Default initialization (in *activated* space), then convert to internal parameterization.
+            base_scale = float(self.spatial_lr_scale) / 100.0 if float(self.spatial_lr_scale) > 0 else 0.01
+            base_scale = max(base_scale, 1e-4)
+
+            for i in range(1, seg_num):
+                points_seg, _ = SegPoints(i, seg_pnum, seg_mask, prior_points)
+                prior_planepoints = points_seg.transpose(1, 0)
+                N = prior_planepoints.shape[0]
+                if N == 0:
+                    continue
+
+                prior_indices = torch.randperm(N)[: min(prp.init_random, N)]
+                new_xyz = prior_planepoints[prior_indices, :]
+                M = new_xyz.shape[0]
+                if M == 0:
+                    continue
+
+                new_scaling_act = torch.full((M, 3), base_scale, device="cuda", dtype=torch.float32)
+                new_scaling = self.scaling_inverse_activation(new_scaling_act)
+
+                new_rotation = torch.zeros((M, 4), device="cuda", dtype=torch.float32)
+                new_rotation[:, 0] = 1.0
+
+                new_opacity = inverse_sigmoid(
+                    0.1 * torch.ones((M, 1), dtype=torch.float32, device="cuda")
+                )
+
+                new_features_dc = torch.zeros((M, 1, 3), device="cuda", dtype=torch.float32)
+                sh_rest = (self.max_sh_degree + 1) ** 2 - 1
+                new_features_rest = torch.zeros((M, sh_rest, 3), device="cuda", dtype=torch.float32)
+
+                new_knn_f = torch.randn((M, 6), device="cuda", dtype=torch.float32)
+
+                self.densification_postfix(
+                    new_xyz,
+                    new_knn_f,
+                    new_features_dc,
+                    new_features_rest,
+                    new_opacity,
+                    new_scaling,
+                    new_rotation,
+                )
+                torch.cuda.empty_cache()
+            return
+
         all_points_distance = torch.mean(torch.sqrt(torch.clamp_min(distCUDA2(gs_points), 0.0000001)))
         gs_seg_mask = PlaneMaskGS(gs_points, planarmasks, vis_mask, viewpoint_cam.K, R, T)
 
@@ -524,7 +592,8 @@ class GaussianModel:
                 new_xyz = prior_planepoints[prior_indices, :]
                 gs_nearest = find_nearest(new_xyz, gs_points)
 
-            new_scaling = self.get_scaling[gs_nearest, :] / 5
+            # get_scaling is in activated space (exp). Convert back to internal parameter space.
+            new_scaling = self.scaling_inverse_activation(self.get_scaling[gs_nearest, :] / 5.0)
             new_rotation = self._rotation[gs_nearest, :]
             new_features_dc = self._features_dc[gs_nearest, :, :]
             new_features_rest = self._features_rest[gs_nearest, :, :]

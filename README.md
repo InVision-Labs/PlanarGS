@@ -15,19 +15,19 @@ PlanarGS combines planar priors from the LP3 pipeline and geometric priors from 
 git clone https://github.com/SJTU-ViSYS-team/PlanarGS.git --recursive  
 cd PlanarGS
 
-conda create -n planargs python=3.10
-conda activate planargs
-pip install cmake==3.20.*
+micromamba create -n planargs python=3.10
+micromamba activate planargs
+uv pip install cmake==3.20.*
 
-pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cu118  #replace your cuda version
+uv pip install torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cu121  #replace your cuda version
 
-pip install -r requirements.txt 
+uv pip install -r requirements.txt 
 ```
 Install submodules:
 ``` shell
-pip install -e submodules/simple-knn --no-build-isolation 
-pip install -e submodules/pytorch3d --no-build-isolation   
-pip install submodules/diff-plane-rasterization --no-build-isolation   
+uv pip install -e submodules/simple-knn --no-build-isolation 
+uv pip install -e submodules/pytorch3d --no-build-isolation   
+uv pip install submodules/diff-plane-rasterization --no-build-isolation   
 ```
 ### Installation of GroundedSAM
 We use the pre-trained vision-language foundational model [GroundedSAM](https://github.com/IDEA-Research/Grounded-Segment-Anything) in the Pipeline for Language-prompted planar priors (LP3). You can download and install it following:
@@ -36,12 +36,21 @@ cd submodules
 git clone https://github.com/IDEA-Research/Grounded-Segment-Anything.git 
 mv Grounded-Segment-Anything groundedsam
 
-cd groundedsam && pip install -e segment_anything
-pip install --no-build-isolation -e GroundingDINO 
+cd groundedsam && uv pip install -e segment_anything
+uv pip install --no-build-isolation -e GroundingDINO 
 && cd ../..
+
+mkdir -p ckpt
+
+# GroundingDINO original Swin-T checkpoint
+curl -L https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth \
+     -o ckpt/groundingdino_swint_ogc.pth
+
+# Segment Anything Model (SAM) ViT-H checkpoint
+curl -L https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth \
+     -o ckpt/sam_vit_h_4b8939.pth
+
 ```
-- Please download checkpoints of GroundedSAM from [link1](https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth
-) and [link2](https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth), and put them into the `ckpt` folder.
 ## Dataset Preprocess
 We evaluate our method on multi-view images from three indoor datasets:
 

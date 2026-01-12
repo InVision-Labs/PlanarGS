@@ -50,8 +50,17 @@ def Pointscam2Depth(K, points, size, depth=False, errors=None):
         depthmap[h, w] = pts_depths
         if errors is not None:
             weight = torch.zeros((height, width), device=points.device)
-            weight[h, w] = 1.0 / errors[valid_idx].float()
-            weights = weight / weight.max()
+            # Guard against 1/0 and inf/inf during normalization.
+            eps = 1e-6
+            inv_err = 1.0 / errors[valid_idx].float().clamp_min(eps)
+            # Replace any remaining non-finite entries defensively.
+            inv_err = torch.nan_to_num(inv_err, nan=0.0, posinf=0.0, neginf=0.0)
+            weight[h, w] = inv_err
+            wmax = weight.max()
+            if not torch.isfinite(wmax) or wmax <= 0:
+                weights = torch.zeros_like(weight)
+            else:
+                weights = weight / wmax
             return depthmap, weights
         else:
             return depthmap, torch.ones((height, width), device=points.device)

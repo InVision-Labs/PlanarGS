@@ -30,13 +30,16 @@ def OptimizeGroupDepth(source, target, weight, prep, device="cuda"):
             if target_img.max() == 0:
                 mask_img = torch.zeros_like(target_img, dtype=bool)
             else:
-                target_img_depth_sorted = target_img[target_img>1e-7].sort().values
-                min_prune_threshold = target_img_depth_sorted[int(target_img_depth_sorted.numel() * prep.prune_ratio)]
-                max_prune_threshold = target_img_depth_sorted[int(target_img_depth_sorted.numel() * (1.0 - prep.prune_ratio))]
+                # If the sparse depth is extremely sparse, pruning can remove all constraints and lead to NaNs.
+                vals = target_img[target_img > 1e-7]
+                if vals.numel() >= 10:
+                    target_img_depth_sorted = vals.sort().values
+                    min_prune_threshold = target_img_depth_sorted[int(target_img_depth_sorted.numel() * prep.prune_ratio)]
+                    max_prune_threshold = target_img_depth_sorted[int(target_img_depth_sorted.numel() * (1.0 - prep.prune_ratio))]
 
-                mask_img2 = target_img > min_prune_threshold
-                mask_img3 = target_img < max_prune_threshold
-                mask_img = torch.logical_and(torch.logical_and(mask_img, mask_img2), mask_img3)
+                    mask_img2 = target_img > min_prune_threshold
+                    mask_img3 = target_img < max_prune_threshold
+                    mask_img = torch.logical_and(torch.logical_and(mask_img, mask_img2), mask_img3)
 
         source_masked.append(source_img[mask_img])
         target_masked.append(target_img[mask_img])
@@ -53,9 +56,20 @@ def OptimizeGroupDepth(source, target, weight, prep, device="cuda"):
     loss_prev = 1e6
     loss_ema = 0.0
 
-    stacked_source = torch.cat(source_masked, dim=0).requires_grad_(True)
-    stacked_target = torch.cat(target_masked, dim=0).requires_grad_(True)
-    stacked_weight = torch.cat(weight_masked, dim=0).requires_grad_(False)
+    stacked_source = torch.cat(source_masked, dim=0)
+    stacked_target = torch.cat(target_masked, dim=0)
+    stacked_weight = torch.cat(weight_masked, dim=0)
+
+    # If there are no valid sparse constraints at all, skip alignment (identity transform).
+    if stacked_source.numel() == 0:
+        refined_source = [img.clone() for img in source]
+        param = [1.0, 0.0]
+        loss = 0.0
+        return refined_source, param, loss
+
+    stacked_source = stacked_source.requires_grad_(True)
+    stacked_target = stacked_target.requires_grad_(True)
+    stacked_weight = stacked_weight.requires_grad_(False)
 
     while abs(loss_ema - loss_prev) > prep.align_loss:
         stacked_source_hat = scale * stacked_source + shift

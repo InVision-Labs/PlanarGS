@@ -31,6 +31,22 @@ def AlignGroupDepth(group_cam_infos, depth_list, pcd, conf_list, vis_path, prep,
 
         # Select only the points visible in the current view.
         valid_point3D_ids = cam_info.points3d_ids[cam_info.points3d_ids != -1]
+        # Some views can have zero tracked COLMAP points (e.g. weak texture / failed matching).
+        # In that case we can't build a sparse depth map; fall back to an unconstrained (all-zero weight) target.
+        if valid_point3D_ids.size == 0:
+            depthmap_list.append(torch.zeros((height, width), device=device))  # d_sparse
+            colmapweight_list.append(torch.zeros((height, width), device=device))
+            if conf_list != []:
+                resized_conf_list.append(conf_list[idx])
+            else:
+                resized_conf_list.append(np.ones((height, width)))
+
+            depth = depth_list[idx]
+            if depth.shape != (height, width):
+                depth = cv2.resize(depth, cam_info.size, interpolation=cv2.INTER_LANCZOS4)
+            depths_list.append(torch.from_numpy(depth).to(device))  # d_dense
+            continue
+
         count = 0
         xyz = []
         errors = []
@@ -48,12 +64,16 @@ def AlignGroupDepth(group_cam_infos, depth_list, pcd, conf_list, vis_path, prep,
         K, inv_K = get_k(cam_info.FovX, cam_info.FovY, height, width)
         R = torch.from_numpy(cam_info.R).float().to(device)
         T = torch.from_numpy(cam_info.T).float().to(device)
-        points3d = R.t() @ xyz.t() + T.view(3, 1)  # (3, N)
+        if xyz.numel() == 0:
+            depthmap_list.append(torch.zeros((height, width), device=device))  # d_sparse
+            colmapweight_list.append(torch.zeros((height, width), device=device))
+        else:
+            points3d = R.t() @ xyz.t() + T.view(3, 1)  # (3, N)
 
-        # Assign weights to the point cloud based on COLMAP quality.
-        depthmap, colmap_weight = Pointscam2Depth(K, points3d, size=(height, width), depth=True, errors=errors)
-        depthmap_list.append(depthmap)  # d_sparse
-        colmapweight_list.append(colmap_weight) 
+            # Assign weights to the point cloud based on COLMAP quality.
+            depthmap, colmap_weight = Pointscam2Depth(K, points3d, size=(height, width), depth=True, errors=errors)
+            depthmap_list.append(depthmap)  # d_sparse
+            colmapweight_list.append(colmap_weight) 
        
         depth = depth_list[idx] 
         # Scale adjustment for depth map generateds by the feedforward model.

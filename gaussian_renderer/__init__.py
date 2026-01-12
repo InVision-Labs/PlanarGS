@@ -25,6 +25,42 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     
     Background tensor (bg_color) must be on GPU!
     """
+    # Fast path: if there are no Gaussians yet, do not call the CUDA rasterizer.
+    # Some rasterizer kernels will error with "invalid configuration argument" for empty inputs.
+    if pc.get_xyz.shape[0] == 0:
+        H = int(viewpoint_camera.image_height)
+        W = int(viewpoint_camera.image_width)
+        device = bg_color.device
+        dtype = bg_color.dtype
+
+        rendered_image = bg_color.view(3, 1, 1).expand(3, H, W).contiguous()
+        empty_radii = torch.empty((0,), device=device, dtype=torch.float32)
+        empty_out_observe = torch.empty((0,), device=device, dtype=torch.int32)
+        empty_points = torch.empty((0, 3), device=device, dtype=torch.float32, requires_grad=True)
+
+        return_dict = {
+            "render": rendered_image,
+            "viewspace_points": empty_points,
+            "viewspace_points_abs": empty_points,
+            "visibility_filter": torch.empty((0,), device=device, dtype=torch.bool),
+            "radii": empty_radii,
+            "out_observe": empty_out_observe,
+        }
+
+        if return_plane:
+            return_dict.update(
+                {
+                    "rendered_normal": torch.zeros((3, H, W), device=device, dtype=torch.float32),
+                    "plane_depth": torch.zeros((H, W), device=device, dtype=torch.float32),
+                    "rendered_distance": torch.zeros((1, H, W), device=device, dtype=torch.float32),
+                }
+            )
+
+        if return_depth_normal:
+            return_dict.update({"depth_normal": torch.zeros((3, H, W), device=device, dtype=torch.float32)})
+
+        return return_dict
+
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
     screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
     screenspace_points_abs = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
