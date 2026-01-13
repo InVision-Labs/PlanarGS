@@ -55,6 +55,18 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
 
         depth = out["plane_depth"]
         depth_tsdf = depth.clone()
+
+        # Optional per-view object mask (1=keep, 0=mask out). If provided, we blank out masked
+        # pixels in RGB/normal/depth and also prevent masked depths from contributing to TSDF fusion.
+        if hasattr(view, "object_mask") and view.object_mask is not None:
+            m = view.object_mask
+            if m.dim() == 2:
+                m = m.unsqueeze(0)  # (1, H, W)
+            m = m.to(device=rendering.device, dtype=rendering.dtype).clamp(0.0, 1.0)
+            rendering = rendering * m + background.view(3, 1, 1) * (1.0 - m)
+            out["rendered_normal"] = out["rendered_normal"] * m
+            depth = depth * m.squeeze(0)
+            depth_tsdf = depth_tsdf * m.squeeze(0)
         visualDepth(depth, render_depthcolor_path, view.image_name[0])
         visualNorm(out["rendered_normal"], render_normal_path, view.image_name[0])
 
@@ -74,6 +86,12 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         for idx, view in enumerate(tqdm(views, desc="TSDF Fusion progress")):
             ref_depth = depths_tsdf_fusion[idx].cuda()
             ref_depth[ref_depth > max_depth] = 0
+            if hasattr(view, "object_mask") and view.object_mask is not None:
+                m = view.object_mask
+                if m.dim() == 3:
+                    m = m.squeeze(0)
+                m = m.to(device=ref_depth.device, dtype=ref_depth.dtype).clamp(0.0, 1.0)
+                ref_depth[m < 0.5] = 0
             ref_depth = ref_depth.detach().cpu().numpy()
             
             pose = np.identity(4)

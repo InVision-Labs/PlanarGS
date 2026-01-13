@@ -135,6 +135,13 @@ class PriorParams(ParamGroup):
         self.mesh_sample = 200000
         self.fscore_thresh = 0.05
         self.vis_dist = 0.05
+
+        # Optional per-image object mask to ignore regions during rendering/TSDF fusion.
+        # Expected one mask per image, named <image_stem>.(png|jpg|jpeg|npy) in this directory.
+        # If relative, it's interpreted relative to the dataset source_path.
+        # Convention: mask==1 keeps pixels, mask==0 masks them out (use object_mask_invert to flip).
+        self.object_mask_dir = ""
+        self.object_mask_invert = False
         
         super().__init__(parser, "Prior Parameters")
 

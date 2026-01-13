@@ -18,6 +18,8 @@ import json
 from common_utils.general_utils import PILtoTorch
 from common_utils.graphics_utils import getWorld2View2, getProjectionMatrix, get_k, ThickenLines
 
+_WARNED_OBJECT_MASK_DIR = False
+
 
 class Camera(nn.Module):
     def __init__(self, colmap_id, R, T, FoVx, FoVy, resolution, path, 
@@ -57,6 +59,55 @@ class Camera(nn.Module):
         canny_mask = cv2.Canny(np.array(resized_image), params.canny_thresh[0], params.canny_thresh[1])/255.  
         canny_masker = torch.from_numpy(canny_mask).clamp(0.0, 1.0).to(self.data_device)
         self.canny_mask = 1 - ThickenLines(canny_masker, kernel_size=5)
+
+        # Optional binary object mask to ignore pixels during rendering / TSDF fusion.
+        # Convention: 1 = keep, 0 = mask out. Stored as float tensor (H, W) in [0, 1].
+        self.object_mask = None
+        if getattr(params, "object_mask_dir", ""):
+            mask_dir_raw = params.object_mask_dir
+            candidate_dirs = []
+            if os.path.isabs(mask_dir_raw):
+                candidate_dirs.append(mask_dir_raw)
+            else:
+                # Common cases:
+                # - relative to dataset root (source_path): "sam2_masks/obj_000004"
+                # - relative to current working directory: "scenes/.../sam2_masks/obj_000004"
+                candidate_dirs.append(os.path.join(path, mask_dir_raw))
+                candidate_dirs.append(os.path.abspath(mask_dir_raw))
+            mask_dir = next((d for d in candidate_dirs if os.path.exists(d)), None)
+            if mask_dir is None:
+                global _WARNED_OBJECT_MASK_DIR
+                if not _WARNED_OBJECT_MASK_DIR:
+                    print(f"[Warning] object_mask_dir='{mask_dir_raw}' not found. Tried: {candidate_dirs}")
+                    _WARNED_OBJECT_MASK_DIR = True
+                mask_dir = None
+
+            stem = image_name[0]
+            if mask_dir is not None:
+                candidates = [
+                    os.path.join(mask_dir, stem + ".npy"),
+                    os.path.join(mask_dir, stem + ".png"),
+                    os.path.join(mask_dir, stem + ".jpg"),
+                    os.path.join(mask_dir, stem + ".jpeg"),
+                ]
+                mask_path = next((p for p in candidates if os.path.exists(p)), None)
+                if mask_path is not None:
+                    if mask_path.endswith(".npy"):
+                        m = np.load(mask_path)
+                        m = m.squeeze()
+                    else:
+                        m = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+                    if m is not None:
+                        m = cv2.resize(m, resolution, interpolation=cv2.INTER_NEAREST)
+                        if m.dtype != np.float32:
+                            m = m.astype(np.float32)
+                        # Accept 0/255 masks or 0/1 masks
+                        if m.max() > 1.5:
+                            m = m / 255.0
+                        m = np.clip(m, 0.0, 1.0)
+                        if getattr(params, "object_mask_invert", False):
+                            m = 1.0 - m
+                        self.object_mask = torch.from_numpy(m).to(self.data_device)
 
         if os.path.exists(planarmask_path):
             planar_mask = cv2.resize(np.load(planarmask_path).squeeze(0), resolution, interpolation=cv2.INTER_NEAREST)
